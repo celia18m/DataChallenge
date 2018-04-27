@@ -1,0 +1,424 @@
+---
+title: "challenge"
+author: "Muqian Ye"
+date: "2018/3/28"
+output: html_document
+---
+
+```{r message=FALSE, warning=FALSE}
+library(dplyr)
+library(maptools)
+library(ggplot2)
+```
+
+```{r}
+testoutcome <- read.csv("Testoutcome.csv", header = T, encoding = "UTF-8", na.strings = c("missing", "缺失"))
+testitem <- read.csv("Testitem.csv", header = T, encoding = "UTF-8")
+prerequisite <- read.csv("Prerequisite.csv", header = T)
+
+colnames(testoutcome) <- c("city", "userId", "topicId", "topic", "userReportId", "conceptId", "concept", "master_char", "master")
+colnames(testitem) <- c("city", "userId", "topicId", "topic", "userReportId", "examId", "series", "conceptId", "concept", "questionId", "question", "correct_char", "correct", "skip", "difficulty", "startTime", "endTime", "timespent")
+
+attach(testoutcome)
+testoutcome$userId <- as.factor(userId)
+testoutcome$topicId <- as.factor(topicId)
+testoutcome$userReportId <- as.factor(userReportId)
+testoutcome$conceptId <- as.factor(conceptId)
+detach()
+
+attach(testitem)
+testitem$userId <- as.factor(userId)
+testitem$topicId <- as.factor(topicId)
+testitem$userReportId <- as.factor(userReportId)
+testitem$examId <- as.factor(examId)
+testitem$conceptId <- as.factor(conceptId)
+testitem$questionId <- as.factor(questionId)
+detach()
+```
+
+## 描述性统计
+### 用户数与测评数统计
+```{r}
+length(unique(testoutcome$userId))
+length(unique(testoutcome$userReportId))
+
+t <- unique(testoutcome[, c(2,5)])
+t.user <- group_by(t, userId)
+t.user.report <- summarise(t.user, n = n())
+summary(t.user.report$n)
+sum(t.user.report$n==1)
+
+ggplot(t.user.report, aes(x  = n)) + 
+  geom_bar(stat = 'count', fill="darkorange2") + 
+  theme_bw() +
+  theme(plot.title = element_text(hjust= 0.5)) + 
+  labs(x = "Number of Report", title = "Distribution of Reports by Users")
+```
+
+共1863位测评者，2235份测评报告。其中1631位用户只做了一次测评。最多的一位用户做了16次测评。
+
+### 用户地域分布
+```{r}
+t <- unique(testoutcome[, c(1,2)])
+sum(t$city=="NULL")
+
+t <- t[t$city!="NULL", ]
+t.city <- group_by(t, city)
+t.user.city <- summarise(t.city, n = n())
+
+summary(t.user.city$n)
+
+ggplot(t.user.city, aes(x  = n)) + 
+  geom_histogram(fill="darkorange2") + 
+  theme_bw() +
+  theme(plot.title = element_text(hjust= 0.5)) + 
+  labs(x = "Number of Users", title = "Distribution of Users across Citys")
+```
+
+除去63位位置信息不明的用户，其余用户来自262个城市。测评者最多的城市是北京，共有119位测评者。
+
+```{r message=FALSE, warning=FALSE}
+province <- read.csv("province.csv", header = T, encoding = "UTF-8")
+colnames(province) <- c("province", "city")
+t.province <- left_join(t, province, by = "city")
+t.province[which(t.province$city=="吉林"), 3] <- "吉林省"
+t.province <- t.province[!is.na(t.province$province), ]
+
+t.province <- group_by(t.province, province)
+t.user.prov <- summarise(t.province, n = n())
+
+summary(t.user.prov$n)
+
+ggplot(t.user.prov, aes(x  = n)) + 
+  geom_histogram(fill="darkorange2") + 
+  theme_bw() +
+  theme(plot.title = element_text(hjust= 0.5)) + 
+  labs(x = "Number of Users", title = "Distribution of Users across Provinces")
+
+ggplot(data = t.user.prov, mapping = aes(x = factor(province), y = n)) + 
+  geom_bar(stat= 'identity', position = 'dodge',fill="darkorange2") + 
+  labs(x = "Province", y = "count", title = "Distribution of Users across Provinces") +
+  theme(plot.title = element_text(hjust= 0.5))
+
+```
+
+根据省份合并后产生了一些变化，平均每个省有57名测评者，最多的省份是山东省，共有203名。
+
+```{r message=FALSE, warning=FALSE}
+china_map = readShapePoly('bou2_4p.shp')
+china_map@data$NAME <- as.character(iconv(china_map@data$NAME,"GBK","UTF-8"))
+
+data1<- china_map@data
+data2<- data.frame(id=row.names(data1), data1)
+china_map1 <- fortify(china_map)
+china_map_data <- full_join(china_map1, data2)
+
+prov <- t.user.prov
+colnames(prov)[1]<-"NAME"
+china_data <- full_join(china_map_data, prov)
+ggplot(china_data, aes(x = long, y = lat, group = group, fill = n)) +
+  geom_polygon(colour="grey40") + 
+  scale_fill_gradient(low="white",high="darkorange2") +
+  coord_map("polyconic") +
+  labs(x = "", y = "" , title = "The distribution of users across Country") +
+  theme(plot.title = element_text(hjust= 0.5))
+```
+
+### 测评的出题数分布
+```{r fig.height=7, fig.width=10}
+unique(testitem$conceptId)
+
+ggplot(testitem, aes(x  = conceptId)) + 
+  geom_bar(stat = 'count', fill="darkorange2") + 
+  theme_bw() +
+  theme(plot.title = element_text(hjust= 0.5)) + 
+  ggtitle('Distribution of Questions per Concept')
+```
+
+共有18个知识点，其中最频繁出现的是“分数：通分”，其次是“分数乘法”和“分数减法”。
+
+### 知识点的掌握率统计
+```{r fig.height=7, fig.width=10}
+ind <- which(!is.na(testoutcome$master))
+t.master <- testoutcome[ind, c(6, 9)]
+t.master <- group_by(t.master, conceptId)
+t.user.master <- summarise(t.master, n = n(), sumMaster = sum(master))
+t.user.master <- mutate(t.user.master, rate = sumMaster/n)
+t.user.master
+
+ggplot(data = t.user.master, mapping = aes(x = factor(conceptId), y = rate)) + 
+  geom_bar(stat= 'identity', position = 'dodge',fill="darkorange2") + 
+  labs(x = "conceptId", y = "rate", title = "Distribution of Concept Mastery") +
+  theme(plot.title = element_text(hjust= 0.5))
+```
+
+“分数：通分”的掌握率最高，将近90%的掌握度。比值可能是新加入的教学内容，只有一位同学的测试记录，正确率也非常低。
+
+### 测评答题正确率统计
+```{r}
+length(unique(testitem$questionId))
+
+t.correct <- testitem[, c(10, 13)]
+t.correct <- group_by(t.correct, questionId)
+t.user.correct <- summarise(t.correct, n = n(), sumCorrect = sum(correct))
+t.user.correct <- mutate(t.user.correct, rate = sumCorrect/n)
+summary(t.user.correct$rate)
+
+ggplot(t.user.correct, aes(x  = rate)) + 
+  geom_histogram(fill="darkorange2") + 
+  theme_bw() +
+  theme(plot.title = element_text(hjust= 0.5)) + 
+  labs(x = "Correct Rate", title = "Distribution of Correct Rate")
+
+difficult <- unique(testitem[, c(10, 15)])
+t.ques.diff <- full_join(t.user.correct, difficult)
+t.ques.diff$difficulty <- as.factor(t.ques.diff$difficulty)
+
+bartlett.test(rate ~ difficulty, data = t.ques.diff)
+rate.diff <- aov(rate ~ difficulty, data = t.ques.diff)
+summary(rate.diff)
+TukeyHSD(rate.diff)
+```
+
+目前出现的共有387道不同的题，平均正确率约为0.4。
+不同难度题目的正确率有无差别，首先用bartlett检验考察，符合方差齐次性，因此可以进行方差分析，结果显示组间差距不是很明显，进一步用多重比较进行分析，发现相邻难度之间的正确率没有显著差异，但是难度为1的题和难度为3的题之间的正确率差别就很大了。
+
+### 答题时间分析
+
+timespent应该为startTime和endTime之间的时间差，但是由于十进制运算产生了错误，所以重新计算该变量。
+
+```{r}
+summary(testitem$timespent)
+startTime <- as.POSIXct(as.character(testitem$startTime), format = '%m/%d/%Y %H:%M:%S')
+endTime <- as.POSIXct(as.character(testitem$endTime), format = '%m/%d/%Y %H:%M:%S')
+timespent <- as.numeric(difftime(endTime, startTime, units="secs"))
+summary(timespent)
+testitem$startTime <- startTime
+testitem$endTime <- endTime
+testitem$timespent <- timespent
+
+sum(testitem$correct[timespent < 5]) / sum(timespent < 5)
+summary(timespent[timespent >= 5])
+27 + 1.5 * (27 - 5)
+sum(testitem$correct[timespent >= 5 & timespent < 1000]) / sum(timespent >= 5 & timespent < 1000)
+ggplot(testitem[timespent >= 5 & timespent < 1000,], aes(x = timespent)) +
+  stat_bin(fill="darkorange2", binwidth = 20) + 
+  ggtitle('Distribution of Time Spent on Questions')
+ggplot(testitem[timespent >= 5 & timespent <= 60,], aes(x = timespent)) +
+  geom_bar(fill="darkorange2") + 
+  ggtitle('Distribution of Time Spent on Questions')
+```
+
+5秒内答完题的正确率在0.278左右，如果是四选一的选择题这个正确率基本和乱猜差不多。所以可以认为5秒内答完题的为无效结果。
+根据Q3+1.5*IQR的算法，用时60s以上的都可以认为是outlier，一共是927个。
+大部分答题时间集中在5～20s，如果是选择题的话可以认为这是一个可信的结果。
+
+### 测评用时分析
+```{r}
+t <- testitem[, c(6, 16, 17)]
+t.test <- group_by(t, examId)
+t.testtime <- summarise(t.test, start = min(startTime), end = max(endTime))
+t.testtime <- mutate(t.testtime, timeused = as.numeric(difftime(end, start, units="secs")))
+summary(t.testtime$timeused)
+207 + 1.5 * (207 - 63)
+sum(t.testtime$timeused > 423)
+ggplot(t.testtime[t.testtime$timeused <= 423,], aes(x = timeused)) +
+  geom_bar(binwidth = 5, fill="darkorange2") + 
+  ggtitle('Distribution of Time Spent on Test')
+```
+
+测评时间427s以上视为异常值，一共有174个。相较于答题时间，测评时间分布更为平缓一些，主要集中在10～200s之间。
+
+### 测评数据中体现出了多少种不同的知识点路径
+```{r message=FALSE, warning=FALSE}
+library(reshape2)
+t.test.concept <- testitem[,c(5,7,8)]
+t.test.concept <- dcast(t.test.concept, userReportId ~ series + conceptId)
+dim(unique(t.test.concept[,-1]))
+```
+
+在2235次测评中，不同的知识点路径数共有475种。
+
+### 测评数据中体现出了多少种不同的做题路径
+```{r message=FALSE, warning=FALSE}
+t.test.question <- testitem[,c(5,7,10)]
+t.test.question <- dcast(t.test.question, userReportId ~ series + questionId)
+dim(unique(t.test.question[,-1]))
+```
+
+不同的做题路径数共有2205种。
+
+## 案例分析
+
+在这个部分，选取4511号同学的数据进行分析。
+
+### 该学生的答题数和正确率
+```{r}
+studentitem <- testitem[which(testitem$userId=="4511"), ]
+length(unique(studentitem$questionId))
+
+sum(studentitem$correct) / dim(studentitem)[1]
+```
+
+这位同学一共答了126道题，其中删去重复的一共是89题。该同学总体的答题正确率为78.57%。
+
+'''可以加上只保留最新一次做题结果的正确率'''
+
+### 掌握和未掌握的知识点数目
+```{r fig.height=7, fig.width=10}
+studentoutcome <- testoutcome[which(testoutcome$userId=="4511"), ]
+
+length(unique(studentoutcome$conceptId))
+
+ggplot(studentoutcome, aes(x  = userReportId, fill = master_char)) + 
+  geom_bar() + 
+  theme_bw() +
+  theme(plot.title = element_text(hjust= 0.5)) + 
+  ggtitle('Concepts Mastery Condition')
+```
+
+### 有多少知识点未做题被智能推断为掌握或者未掌握，是否合理?
+
+```{r}
+t.student <- group_by(studentitem, userReportId)
+t.stu.concept <- summarise(t.student, n = length(unique(conceptId)))
+summary(t.stu.concept$n)
+
+# t.student <- mutate(t.student, )
+t.stu.wrong <- studentitem[studentitem$correct == 0, c(5, 8)]
+```
+
+每次测评一般只考察4～7个知识点，其余11～14个知识点都是智能推断的。
+
+### 有多少知识点被反复测试(做了两道或者三道题)，是否合理?
+```{r}
+t.stu.repeat <- group_by(studentitem, userReportId, conceptId)
+t.stu.rep <- summarise(t.stu.repeat, n = n())
+t.stu.rep[t.stu.rep$n>1, ]
+length(unique(t.stu.rep$conceptId))
+```
+
+每次测评平均有2-3个知识点被反复测试，其中共有12个不同的知识点。
+
+### 对分数与比的知识图谱进行可视化呈现
+```{r fig.height=7, fig.width=10, message=FALSE, warning=FALSE}
+library(networkD3)
+x1 <- prerequisite[which(!is.na(prerequisite[,2])), c(2, 1)]
+x2 <- prerequisite[which(!is.na(prerequisite[,3])), c(3, 1)]
+x3 <- prerequisite[which(!is.na(prerequisite[,4])), c(4, 1)]
+names(x1) <- c("concept", "prerequisite")
+names(x2) <- c("concept", "prerequisite")
+names(x3) <- c("concept", "prerequisite")
+networkData <- bind_rows(x1, x2, x3)
+
+simpleNetwork(networkData, zoom = TRUE)
+```
+
+```{r fig.height=7, fig.width=10, message=FALSE, warning=FALSE}
+library(igraph)
+concept <- unique(studentoutcome[,c(6,7)])
+names(networkData) <- c("to", "from")
+g <- graph_from_data_frame(networkData, directed=TRUE, vertices=concept)
+plot(g)
+```
+
+```{r message=FALSE, warning=FALSE}
+library(bnlearn)
+library(Rgraphviz)
+
+KnowledgeMap = as.matrix(read.csv("Prerequisite.csv", header = F, skip = 1))
+
+cl=as.character(KnowledgeMap[,1])
+nc=length(cl)
+np=dim(KnowledgeMap)[2]
+
+KG <- new("graphNEL", nodes=cl, edgemode="directed")
+
+for (i in 1:nc) {
+  for (j in 2:np) {
+    
+if (!is.na(KnowledgeMap[i,j]))
+{
+  KG <- addEdge(as.character(KnowledgeMap[i,j]),cl[i], KG, 1)
+}
+  }
+}
+
+nAttrs <- list()
+#color=c(rep("skyblue",5),rep("lightgreen",6),rep("yellow",3),rep("pink",5))
+color=rep("white",nc)
+nAttrs$fillcolor <- color
+names(nAttrs$fillcolor)=cl
+
+par(family='STKaiti')
+plot(KG, nodeAttrs=nAttrs,main="")
+```
+
+### 对该学生测评过程的知识点路径进行可视化
+```{r fig.height=7, fig.width=10, message=FALSE, warning=FALSE}
+ggplot(studentitem, aes(x = as.factor(series), y = conceptId, colour = userReportId, group=userReportId)) +
+  geom_line(size=2, alpha = 0.5) + 
+  geom_point(size=4)
+```
+
+### 对该学生测评结果的知识状态进行可视化
+```{r fig.height=7, fig.width=10, message=FALSE, warning=FALSE}
+base_size <- 12
+outcome_concept <- ggplot(studentoutcome, aes(userReportId, conceptId))+
+  geom_tile(aes(fill = master), colour = "white")+
+  scale_fill_gradient(low = "coral4", high = "white")+
+  theme_grey(base_size = base_size)+
+  labs(x = "userReportId", y = "conceptId" , title = "The condition of concept mastery of outcome")+
+  theme(plot.title = element_text(hjust = 0.5))
+print(outcome_concept)
+```
+
+### 基于测评结果，你会给老师什么样的教学建议?
+加强比值知识点的学习
+
+## 知识图谱迭代
+### 一共有多少种知识状态?
+
+2**18
+
+### 其中有多少种可行知识状态?
+
+50
+
+### 如何基于测评数据分析两个知识点间是否有前提关系以及关系强弱?
+
+```{r fig.height=8, fig.width=8, message=FALSE, warning=FALSE}
+library(corrplot)
+test.concept <- testitem[which(testitem$timespent >= 5 & testitem$timespent <= 60), c(5, 8, 13)]
+
+test.concept <- group_by(test.concept, userReportId, conceptId)
+t.test.concept <- summarise(test.concept, n = n(), sumCorrect = sum(correct))
+t.test.concept <- mutate(t.test.concept, rate = sumCorrect/n)
+
+t.concept.rate <- dcast(t.test.concept, userReportId~conceptId, value.var = "rate")
+
+corr.concept <- cor(t.concept.rate[,-1])
+for (i in 1:17){
+  for (j in (i+1):18){
+    try(c <- cor(t.concept.rate[, c(i+1, j+1)], use = "complete.obs"), silent = T)
+    try(corr.concept[i, j] <- c[1,2], silent = T)
+    try(corr.concept[j, i] <- c[2,1], silent = T)
+        
+  }
+}
+
+corrplot(corr.concept, method = "color")
+```
+
+只取有效结果进行分析，首先计算每次测评中各个知识点的答题正确率，然后两两计算相关系数。
+比如2015006和2015007以及2015012就有很强的相关性。如果数据足够多效果会更好。
+但是缺少因果关系。
+
+结合Prerequisite来看，7和6没有直接因果关系，但是7的前置要求5和6所拥有的前置条件是一模一样的。7和12也是一样，没有直接的联系，但是共有最底层的前置条件。
+
+### 你会对当前知识图谱做怎么样的迭代?
+
+知识图谱可以不只有前后因果关系，还可以把相似的，学生容易一起掌握或者比较难攻克的知识点做一个整合。目前的知识图谱只限于相关学习单元，但追根溯源掌握情况可能由更基础的知识点决定。
+
+
+
